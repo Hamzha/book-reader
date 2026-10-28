@@ -55,6 +55,7 @@ export const api = {
     invoke<void>("tick_reading", { bookId, seconds, pages }),
   takeLaunchFiles: () => invoke<string[]>("take_launch_files"),
   bookByPath: (path: string) => invoke<Book | null>("book_by_path", { path }),
+  convertPdfToMobi: (bookId: string, dest: string) => invoke<Book>("convert_pdf_to_mobi", { bookId, dest }),
 };
 
 export function coverUrl(id: string) {

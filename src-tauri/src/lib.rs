@@ -227,6 +227,33 @@ fn take_launch_files(state: State<AppState>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn convert_pdf_to_mobi(state: State<AppState>, book_id: String, dest: String) -> Result<Book, String> {
+    let data_dir = state.data_dir.clone();
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let book = db.get_book(&book_id)?.ok_or("That book is not in the library.")?;
+    if book.format != "pdf" {
+        return Err("Only a PDF can be converted to MOBI.".into());
+    }
+    let extracted = formats::pdf::extract(Path::new(&book.path))?;
+    let html = formats::pdf::pages_as_html(&book.title, &extracted.plain_pages)?;
+    drop(db);
+    let mut dest_path = PathBuf::from(&dest);
+    if dest_path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.eq_ignore_ascii_case("mobi")) != Some(true) {
+        dest_path.set_extension("mobi");
+    }
+    formats::mobi::write_book(&dest_path, &book.title, &html)?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let report = import::import_paths(&db, &data_dir, &[dest_path.to_string_lossy().to_string()]);
+    report.added.into_iter().next().ok_or_else(|| {
+        report
+            .failed
+            .first()
+            .map(|item| item.message.clone())
+            .unwrap_or_else(|| "The MOBI was saved but could not be added to the library.".into())
+    })
+}
+
+#[tauri::command]
 fn book_by_path(state: State<AppState>, path: String) -> Result<Option<Book>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let key = import::normalize(Path::new(&path));
@@ -283,6 +310,7 @@ pub fn run() {
             stats_summary,
             tick_reading,
             take_launch_files,
+            convert_pdf_to_mobi,
             book_by_path
         ])
         .run(tauri::generate_context!())
