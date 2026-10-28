@@ -447,6 +447,98 @@ fn read_u64(data: &[u8], offset: usize) -> u64 {
         .unwrap_or(0)
 }
 
+pub fn write_book(path: &Path, title: &str, html: &str) -> Result<(), String> {
+    if html.trim().is_empty() {
+        return Err("There is no text to write.".into());
+    }
+    let pieces = split_text(html, 4096);
+    let record0 = header_record(title, html.len(), pieces.len());
+    let mut records: Vec<Vec<u8>> = Vec::with_capacity(pieces.len() + 1);
+    records.push(record0);
+    for piece in pieces {
+        records.push(piece.into_bytes());
+    }
+    let mut file = vec![0u8; 78 + records.len() * 8];
+    let name = pdb_title(title);
+    file[..name.len()].copy_from_slice(&name);
+    file[60..68].copy_from_slice(b"BOOKMOBI");
+    file[76..78].copy_from_slice(&(records.len() as u16).to_be_bytes());
+    let mut cursor = file.len() as u32;
+    for (index, record) in records.iter().enumerate() {
+        let at = 78 + index * 8;
+        file[at..at + 4].copy_from_slice(&cursor.to_be_bytes());
+        cursor += record.len() as u32;
+    }
+    for record in records {
+        file.extend(record);
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::write(path, file).map_err(|e| e.to_string())
+}
+
+fn header_record(title: &str, text_length: usize, text_records: usize) -> Vec<u8> {
+    let mut record = vec![0u8; 0x100];
+    record[0..2].copy_from_slice(&1u16.to_be_bytes());
+    record[4..8].copy_from_slice(&(text_length as u32).to_be_bytes());
+    record[8..10].copy_from_slice(&(text_records as u16).to_be_bytes());
+    record[10..12].copy_from_slice(&4096u16.to_be_bytes());
+    record[16..20].copy_from_slice(b"MOBI");
+    record[0x14..0x18].copy_from_slice(&0x68u32.to_be_bytes());
+    record[0x1c..0x20].copy_from_slice(&65001u32.to_be_bytes());
+    let title_bytes = truncate_bytes(title, 0x70);
+    record[0x54..0x58].copy_from_slice(&0x80u32.to_be_bytes());
+    record[0x58..0x5c].copy_from_slice(&(title_bytes.len() as u32).to_be_bytes());
+    record[0x80..0x80 + title_bytes.len()].copy_from_slice(&title_bytes);
+    record
+}
+
+fn pdb_title(title: &str) -> Vec<u8> {
+    let mut name = truncate_bytes(title, 31);
+    if name.is_empty() {
+        name.extend_from_slice(b"Book");
+    }
+    name.resize(32, 0);
+    name
+}
+
+fn truncate_bytes(text: &str, max: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for ch in text.chars() {
+        let mut buf = [0u8; 4];
+        let encoded = ch.encode_utf8(&mut buf);
+        if out.len() + encoded.len() > max {
+            break;
+        }
+        out.extend_from_slice(encoded.as_bytes());
+    }
+    out
+}
+
+fn split_text(text: &str, max: usize) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if rest.len() <= max {
+            pieces.push(rest.to_string());
+            break;
+        }
+        let mut end = max;
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
+            end = rest.chars().next().map(|ch| ch.len_utf8()).unwrap_or(rest.len());
+        }
+        pieces.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    pieces
+}
+
 pub fn palmdoc_decompress(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() * 2);
     let mut i = 0;
@@ -583,5 +675,19 @@ mod tests {
         data[record1_at..].copy_from_slice(text);
         let book = super::parse_mobi(&data).unwrap();
         assert_eq!(book.text, "Hello");
+    }
+
+    #[test]
+    fn writes_a_mobi_our_reader_can_open() {
+        let dir = std::env::temp_dir().join(format!("book-reader-mobi-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.mobi");
+        let html = "<html><body><h1>Sample</h1><p>Hello from a page.</p></body></html>";
+        super::write_book(&path, "Sample", html).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let book = super::parse_mobi(&bytes).unwrap();
+        assert_eq!(book.title, "Sample");
+        assert!(book.text.contains("Hello from a page."));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

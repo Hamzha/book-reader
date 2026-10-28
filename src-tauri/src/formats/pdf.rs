@@ -3,6 +3,25 @@ use std::path::Path;
 use lopdf::Object;
 
 use super::Extracted;
+use crate::htmlutil::escape;
+
+pub fn pages_as_html(title: &str, pages: &[String]) -> Result<String, String> {
+    let mut body = String::new();
+    let mut any = false;
+    for (index, page) in pages.iter().enumerate() {
+        let text = page.trim();
+        if text.is_empty() {
+            continue;
+        }
+        any = true;
+        let paragraph = escape(text).replace('\n', "<br/>");
+        body.push_str(&format!("<h2>Page {}</h2>\n<p>{paragraph}</p>\n", index + 1));
+    }
+    if !any {
+        return Err("This PDF has no text layer, so it cannot be converted to MOBI.".into());
+    }
+    Ok(format!("<html><body><h1>{}</h1>\n{body}</body></html>", escape(title)))
+}
 
 pub fn extract(path: &Path) -> Result<Extracted, String> {
     let doc = lopdf::Document::load(path).map_err(|e| format!("Could not open this PDF: {e}"))?;

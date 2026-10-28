@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api, coverUrl } from "../api";
 import { BOOK_EXTENSIONS, type Book, type Shelf, type Stats } from "../types";
@@ -21,6 +21,7 @@ export default function Library({ onOpen, refreshKey }: Props) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageError, setMessageError] = useState(true);
   const [hot, setHot] = useState(false);
   const [menu, setMenu] = useState<{ book: Book; x: number; y: number } | null>(null);
   const [shelfName, setShelfName] = useState("");
@@ -37,7 +38,10 @@ export default function Library({ onOpen, refreshKey }: Props) {
   }
 
   useEffect(() => {
-    reload().catch((error: unknown) => setMessage(String(error)));
+    reload().catch((error: unknown) => {
+      setMessageError(true);
+      setMessage(String(error));
+    });
   }, [sort, query, shelfId, refreshKey]);
 
   useEffect(() => {
@@ -60,10 +64,35 @@ export default function Library({ onOpen, refreshKey }: Props) {
     try {
       const report = await api.importPaths(paths);
       if (report.failed.length) {
+        setMessageError(true);
         setMessage(report.failed.map((item) => `${item.path}: ${item.message}`).join("\n"));
       }
       await reload();
     } catch (error) {
+      setMessageError(true);
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function convertPdf(book: Book) {
+    setMenu(null);
+    const safe = book.title.replace(/[<>:"/\\|?*]/g, "").trim() || "book";
+    const path = await save({
+      defaultPath: `${safe}.mobi`,
+      filters: [{ name: "MOBI", extensions: ["mobi"] }],
+    });
+    if (typeof path !== "string") return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.convertPdfToMobi(book.id, path);
+      setMessageError(false);
+      setMessage("Converted to MOBI and added it to the library.");
+      await reload();
+    } catch (error) {
+      setMessageError(true);
       setMessage(String(error));
     } finally {
       setBusy(false);
@@ -149,7 +178,7 @@ export default function Library({ onOpen, refreshKey }: Props) {
             </div>
           </div>
         )}
-        {message && <div className="banner error">{message}</div>}
+        {message && <div className={messageError ? "banner error" : "banner"}>{message}</div>}
         {continueBook && !query && !shelfId && (
           <div className="continue">
             <div>
@@ -203,6 +232,9 @@ export default function Library({ onOpen, refreshKey }: Props) {
               <button onClick={() => api.removeFromShelf(shelfId, menu.book.id).then(() => { setMenu(null); reload(); })}>
                 Remove from shelf
               </button>
+            )}
+            {menu.book.format === "pdf" && (
+              <button onClick={() => { void convertPdf(menu.book); }}>Convert to MOBI</button>
             )}
             <button onClick={() => api.removeBook(menu.book.id).then(() => { setMenu(null); reload(); })}>
               Remove from library
